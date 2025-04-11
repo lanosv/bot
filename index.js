@@ -1,3 +1,8 @@
+process.on('unhandledRejection', (error) => {
+    console.error('Unhandled promise rejection:', error);
+});
+
+
 const {
     Client,
     GatewayIntentBits,
@@ -29,7 +34,7 @@ if (fs.existsSync(welcomeFilePath)) {
 }
 
 // Stocker les demandes en attente
-const pendingRequests = new Map(); // Clé : ID membre, Valeur : département
+const pendingRequests = new Map(); // Clé : ID membre, Valeur : Set de  département
 
 // Configuration des rôles et canaux
 const departmentRoles = {
@@ -106,34 +111,34 @@ client.on('interactionCreate', async (interaction) => {
     const roleID = departmentRoles[department];
     const channelID = departmentChannels[department];
 
+    await interaction.deferReply({ flags: 1 << 6 }); // 🔹 Important : défère l'interaction au début
+
     if (!roleID || !channelID) {
-        return interaction.reply({ content: "❌ Erreur : département non reconnu.", ephemeral: true });
+        return interaction.editReply({ content: "❌ Erreur : département non reconnu." });
     }
 
     const channel = interaction.guild.channels.cache.get(channelID);
     if (!channel) {
-        return interaction.reply({ content: "❌ Erreur : le canal du département est introuvable.", ephemeral: true });
+        return interaction.editReply({ content: "❌ Erreur : le canal du département est introuvable." });
     }
 
-    if (pendingRequests.has(member.id)) {
-        return interaction.reply({
-            content: `⏳ Tu as déjà fait une demande pour **${pendingRequests.get(member.id)}**. Attends la validation du chef.`,
-            ephemeral: true
-        });
+    const pending = pendingRequests.get(member.id) || new Set();
+    if (pending.has(department)) {
+        return interaction.editReply({ content: `⏳ Tu as déjà fait une demande pour **${department}**. Attends la validation du chef.`});
     }
 
     if (channel.permissionsFor(member).has(PermissionFlagsBits.ViewChannel)) {
-        return interaction.reply({ content: "❌ Tu fais déjà partie de ce département.", ephemeral: true });
+        return interaction.editReply({ content: "❌ Tu fais déjà partie de ce département." });
     }
 
     const chefRoleID = departmentRoles[`Chef ${department}`];
     if (!chefRoleID) {
-        return interaction.reply({ content: "❌ Erreur : Aucun chef défini pour ce département.", ephemeral: true });
+        return interaction.editReply({ content: "❌ Erreur : Aucun chef défini pour ce département." });
     }
 
     const botMember = interaction.guild.members.me;
     if (!channel.permissionsFor(botMember).has(PermissionFlagsBits.SendMessages)) {
-        return interaction.reply({ content: "❌ Je n'ai pas la permission d'envoyer des messages dans ce salon.", ephemeral: true });
+        return interaction.editReply({ content: "❌ Je n'ai pas la permission d'envoyer des messages dans ce salon." });
     }
 
     const message = await channel.send(
@@ -143,10 +148,13 @@ client.on('interactionCreate', async (interaction) => {
     await message.react("✅");
     await message.react("❌");
 
-    pendingRequests.set(member.id, department);
+    //pendingRequests.set(member.id, department);
+    pending.add(department);
+    pendingRequests.set(member.id, pending);
 
-    interaction.reply({ content: `✅ Tu as choisi **${department}**. En attente de validation du chef.`, ephemeral: true });
+    return interaction.editReply({ content: `✅ Tu as choisi **${department}**. En attente de validation du chef.` });
 });
+
 
 // Événement pour gérer la validation du chef
 client.on('messageReactionAdd', async (reaction, user) => {
@@ -172,11 +180,28 @@ client.on('messageReactionAdd', async (reaction, user) => {
     if (reaction.emoji.name === "✅") {
         await member.roles.add(roleID);
         await message.reply(`✅ **${member.displayName}** a été accepté dans **${department}**.`);
-        pendingRequests.delete(member.id);
+        //pendingRequests.delete(member.id);
+        const pending = pendingRequests.get(member.id);
+        if (pending) {
+           pending.delete(department);
+           if (pending.size === 0) pendingRequests.delete(member.id);
+        }
+
     } else if (reaction.emoji.name === "❌") {
-        await message.reply(`❌ **${member.displayName}** a été refusé dans **${department}**.`);
-        pendingRequests.delete(member.id);
+    await message.reply(`❌ **${member.displayName}** a été refusé dans **${department}**.`);
+    try {
+        await member.send(`❌ Ta demande pour rejoindre **${department}** a été refusée.`);
+    } catch (err) {
+        console.warn(`Impossible d'envoyer un MP à ${member.user.tag}`);
     }
+    //pendingRequests.delete(member.id);
+    const pending = pendingRequests.get(member.id);
+    if (pending) {
+        pending.delete(department);
+        if (pending.size === 0) pendingRequests.delete(member.id);
+    }
+}
+
 });
 
 // Démarrer le bot
